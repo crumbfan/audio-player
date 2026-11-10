@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>8-Channel Audio Player</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f3f4f7;--surface:#ffffff;--text:#1b1d22;--muted:#6b7080;--line:#dcdfe6;--accent:#2f6fed;--on-accent:#ffffff;--solo:#d9961f;--mute:#d64545}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#13151a;--surface:#1c1f26;--text:#e9ebf0;--muted:#98a0b2;--line:#2c313b;--accent:#5b8dff;--on-accent:#0b1020;--solo:#e5a93a;--mute:#ef6a6a}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#13151a;--surface:#1c1f26;--text:#e9ebf0;--muted:#98a0b2;--line:#2c313b;--accent:#5b8dff;--on-accent:#0b1020;--solo:#e5a93a;--mute:#ef6a6a}
+*,*::before,*::after{box-sizing:inherit}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:12px}
+.player{width:100%;display:flex;flex-direction:column;gap:8px}
+.transport{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;position:sticky;top:0;z-index:5}
+#playBtn{width:44px;height:44px;border-radius:50%;background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-size:16px;padding:0;flex:none}
+.time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;white-space:nowrap}
+.transport .seek{flex:1;min-width:0}
+.mv{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;width:150px}
+.ch{position:relative;overflow:hidden;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px 13px}
+.ch.drag{outline:2px dashed var(--accent)}
+.num{flex:none;width:24px;height:24px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:12px;display:grid;place-items:center}
+.img{flex:none;width:64px;height:64px;position:relative;overflow:hidden;display:grid;place-items:center;border:1px dashed var(--line);border-radius:8px;background:var(--bg);color:var(--muted);font-size:11px;cursor:pointer}
+.img img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+.img.has{border-style:solid}.img.has img{display:block}.img.has span{display:none}
+.name{flex:1 1 140px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.name.empty{color:var(--muted);font-weight:400}
+.sl{display:flex;align-items:center;gap:6px;width:180px;color:var(--muted);font-size:12px}
+.sl span{width:26px}
+.fill{position:absolute;left:0;bottom:0;height:3px;width:0;background:var(--accent)}
+button,.btn{font:inherit;color:var(--text);background:transparent;border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer;min-height:32px}
+button:hover,.btn:hover{border-color:var(--accent)}
+button.m.on{background:var(--mute);border-color:var(--mute);color:#fff}
+button.s.on{background:var(--solo);border-color:var(--solo);color:#111}
+input[type=file]{display:none}
+input[type=range]{width:100%;accent-color:var(--accent);margin:0;height:20px}
+.hint{color:var(--muted);font-size:12px;margin:4px 2px 0;text-align:center}
+@media (max-width:600px){.mv{display:none}.sl{flex:1 1 140px;width:auto}}
+</style>
+</head>
+<body>
+<div class="player">
+  <div class="transport">
+    <button id="playBtn" aria-label="Play">▶</button>
+    <span class="time" id="cur">0:00</span>
+    <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek all channels">
+    <span class="time" id="dur">0:00</span>
+    <label class="mv">Master <input type="range" id="masterVol" min="0" max="1" step="0.01" value="0.9" aria-label="Master volume"></label>
+  </div>
+  <div id="stack" style="display:flex;flex-direction:column;gap:8px"></div>
+  <p class="hint">Drop or load an audio file on each strip, and an image into its square. Press Space to play or pause.</p>
+</div>
+
+<script>
+/* ---- Embed config: set src to a CORS-enabled audio URL to preload a channel ---- */
+const CONFIG = {
+  channels: [
+    /* optional per channel: img: "https://…/cover.jpg" */
+    { name: "Channel 1", src: "" }, { name: "Channel 2", src: "" },
+    { name: "Channel 3", src: "" }, { name: "Channel 4", src: "" },
+    { name: "Channel 5", src: "" }, { name: "Channel 6", src: "" },
+    { name: "Channel 7", src: "" }, { name: "Channel 8", src: "" }
+  ]
+};
+
+let ctx = null, master = null, playing = false, pos = 0, dragging = false;
+const channels = [];
+const $ = (s, r = document) => r.querySelector(s);
+const fmt = t => { if (!isFinite(t)) return "0:00"; const m = Math.floor(t / 60), s = Math.floor(t % 60); return m + ":" + String(s).padStart(2, "0"); };
+const loaded = () => channels.filter(c => c.hasFile && c.audio.readyState > 0);
+const total = () => Math.max(0, ...loaded().map(c => c.audio.duration || 0));
+const longest = () => loaded().reduce((a, c) => (!a || c.audio.duration > a.audio.duration) ? c : a, null);
+
+function initAudio() {
+  if (ctx) { if (ctx.state === "suspended") ctx.resume(); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  master.gain.value = parseFloat($("#masterVol").value);
+  master.connect(ctx.destination);
+  channels.forEach(c => c.wire());
+}
+function updateGains() { const any = channels.some(c => c.solo); channels.forEach(c => c.applyGain(any)); }
+
+function seekTo(t) {
+  pos = Math.max(0, Math.min(t, total()));
+  loaded().forEach(c => { c.audio.currentTime = Math.min(pos, c.audio.duration || 0); });
+}
+function play() {
+  initAudio();
+  const L = loaded(); if (!L.length) return;
+  if (pos >= total() - 0.05) pos = 0;
+  seekTo(pos);
+  L.forEach(c => { if (pos < c.audio.duration) c.audio.play().catch(() => {}); });
+  playing = true; $("#playBtn").textContent = "❚❚"; $("#playBtn").setAttribute("aria-label", "Pause");
+  requestAnimationFrame(tick);
+}
+function pause() {
+  channels.forEach(c => c.audio.pause());
+  playing = false; $("#playBtn").textContent = "▶"; $("#playBtn").setAttribute("aria-label", "Play");
+}
+function tick() {
+  const ref = longest();
+  if (ref) {
+    if (playing) {
+      pos = ref.audio.currentTime;
+      loaded().forEach(c => {
+        if (c !== ref && !c.audio.paused && Math.abs(c.audio.currentTime - pos) > 0.08) c.audio.currentTime = pos;
+      });
+      if (ref.audio.ended || pos >= total() - 0.02) { pause(); pos = total(); }
+    }
+    const d = total();
+    if (!dragging && d) $("#seek").value = pos / d * 1000;
+    $("#cur").textContent = fmt(pos); $("#dur").textContent = fmt(d);
+    loaded().forEach(c => { c.fill.style.width = (c.audio.duration ? Math.min(100, c.audio.currentTime / c.audio.duration * 100) : 0) + "%"; });
+  }
+  if (playing) requestAnimationFrame(tick);
+}
+
+function makeChannel(cfg, i) {
+  const c = { i, solo: false, mute: false, vol: 0.8, pan: 0, url: null, hasFile: false };
+  const audio = new Audio(); audio.preload = "auto"; c.audio = audio;
+
+  const el = document.createElement("div");
+  el.className = "ch";
+  el.innerHTML = `
+    <label class="img" title="Drop an image here or click to choose"><span>Image</span><img alt=""><input type="file" accept="image/*"></label>
+    <span class="num">${i + 1}</span><span class="name empty"></span>
+    <label class="btn">Load<input type="file" accept="audio/*"></label>
+    <button class="m" aria-label="Mute">Mute</button><button class="s" aria-label="Solo">Solo</button>
+    <label class="sl"><span>Vol</span><input class="vol" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+    <label class="sl"><span>Pan</span><input class="pan" type="range" min="-1" max="1" step="0.01" value="0"></label>
+    <div class="fill"></div>`;
+  c.el = el; c.fill = $(".fill", el);
+  const q = s => $(s, el), nameEl = q(".name");
+  nameEl.textContent = "Empty — load or drop a file";
+
+  c.wire = () => {
+    c.src = ctx.createMediaElementSource(audio);
+    c.gain = ctx.createGain();
+    c.panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    c.src.connect(c.gain);
+    if (c.panner) { c.gain.connect(c.panner); c.panner.connect(master); c.panner.pan.value = c.pan; } else c.gain.connect(master);
+    c.applyGain(channels.some(x => x.solo));
+  };
+  c.applyGain = any => { if (c.gain) c.gain.gain.value = (!c.mute && (!any || c.solo)) ? c.vol : 0; };
+
+  c.setImage = url => {
+    if (c.imgUrl && c.imgUrl.startsWith("blob:")) URL.revokeObjectURL(c.imgUrl);
+    c.imgUrl = url; $(".img img", el).src = url; $(".img", el).classList.add("has");
+  };
+  c.accept = f => {
+    if (f.type.startsWith("audio/")) c.load(URL.createObjectURL(f), f.name);
+    else if (f.type.startsWith("image/")) c.setImage(URL.createObjectURL(f));
+  };
+  c.load = (url, label, remote) => {
+    if (c.url && c.url.startsWith("blob:")) URL.revokeObjectURL(c.url);
+    audio.pause();
+    if (remote && !ctx) audio.crossOrigin = "anonymous";
+    c.url = url; c.hasFile = true; audio.src = url; audio.load();
+    nameEl.textContent = label; nameEl.classList.remove("empty");
+  };
+
+  audio.addEventListener("loadedmetadata", () => {
+    $("#dur").textContent = fmt(total());
+    if (playing) { audio.currentTime = Math.min(pos, audio.duration); if (pos < audio.duration) { initAudio(); audio.play().catch(() => {}); } }
+  });
+  audio.addEventListener("error", () => { if (c.hasFile) nameEl.textContent = "Couldn’t load audio"; });
+
+  el.querySelectorAll("input[type=file]").forEach(inp => inp.addEventListener("change", e => { [...e.target.files].forEach(c.accept); e.target.value = ""; }));
+  el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("drag"); });
+  el.addEventListener("dragleave", () => el.classList.remove("drag"));
+  el.addEventListener("drop", e => { e.preventDefault(); el.classList.remove("drag"); [...e.dataTransfer.files].forEach(c.accept); });
+
+  q(".m").onclick = e => { c.mute = !c.mute; e.currentTarget.classList.toggle("on", c.mute); updateGains(); };
+  q(".s").onclick = e => { c.solo = !c.solo; e.currentTarget.classList.toggle("on", c.solo); updateGains(); };
+  q(".vol").oninput = e => { c.vol = +e.target.value; updateGains(); };
+  q(".pan").oninput = e => { c.pan = +e.target.value; if (c.panner) c.panner.pan.value = c.pan; };
+  q(".pan").ondblclick = e => { e.target.value = 0; c.pan = 0; if (c.panner) c.panner.pan.value = 0; };
+
+  if (cfg.src) c.load(cfg.src, cfg.name, true);
+  if (cfg.img) c.setImage(cfg.img);
+  return c;
+}
+
+const stack = $("#stack");
+CONFIG.channels.slice(0, 8).forEach((cfg, i) => { const c = makeChannel(cfg, i); channels.push(c); stack.appendChild(c.el); });
+
+$("#playBtn").onclick = () => playing ? pause() : play();
+$("#masterVol").oninput = e => { if (master) master.gain.value = +e.target.value; };
+const seek = $("#seek");
+seek.addEventListener("pointerdown", () => dragging = true);
+seek.addEventListener("input", () => { seekTo(seek.value / 1000 * total()); $("#cur").textContent = fmt(pos); tick(); });
+seek.addEventListener("change", () => dragging = false);
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !/BUTTON|INPUT|LABEL/.test(e.target.tagName)) { e.preventDefault(); $("#playBtn").click(); }
+});
+</script>
+</body>
+</html>
