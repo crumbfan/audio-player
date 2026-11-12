@@ -70,6 +70,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0;height:20px}
     <span class="time" id="cur">0:00</span>
     <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek all channels">
     <span class="time" id="dur">0:00</span>
+    <span class="time" id="status"></span>
     <label class="mv">Master <input type="range" id="masterVol" min="0" max="1" step="0.01" value="0.9" aria-label="Master volume"></label>
   </div>
   <div id="stack"></div>
@@ -195,13 +196,15 @@ function makeChannel(cfg, i) {
     if (remote && !ctx) audio.crossOrigin = "anonymous";
     c.url = url; c.hasFile = true; audio.src = url; audio.load();
     nameEl.textContent = label; nameEl.classList.remove("empty");
+    const st = $("#status"); if (st) st.textContent = "Loading audio…";
   };
 
   audio.addEventListener("loadedmetadata", () => {
     $("#dur").textContent = fmt(total());
+    const st = $("#status"); if (st) st.textContent = "";
     if (playing) { audio.currentTime = Math.min(pos, audio.duration); if (pos < audio.duration) { initAudio(); audio.play().catch(() => {}); } }
   });
-  audio.addEventListener("error", () => { if (c.hasFile) nameEl.textContent = "Couldn’t load audio"; });
+  audio.addEventListener("error", () => { if (c.hasFile) { nameEl.textContent = "Couldn’t load audio"; const st = $("#status"); if (st) st.textContent = "Channel " + (i + 1) + ": couldn’t load audio (error " + (audio.error ? audio.error.code : "?") + ")"; } });
 
   el.querySelectorAll("input[type=file]").forEach(inp => inp.addEventListener("change", e => { [...e.target.files].forEach(c.accept); e.target.value = ""; }));
   el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("drag"); });
